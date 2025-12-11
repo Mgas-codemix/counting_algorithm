@@ -287,6 +287,41 @@ python main.py --gc-normalize
 
 This adjusts counts based on GC content to correct for PCR amplification bias.
 
+### R Visualization and QC for DEG Analysis
+
+An R script is provided for detailed visualization and QC specifically for downstream differential expression (DEG) analysis:
+
+```bash
+# Run from command line
+Rscript qc_visualization.R output/grna_counts.csv output/qc/
+
+# Or in R
+source("qc_visualization.R")
+results <- run_qc_analysis("output/grna_counts.csv")
+```
+
+**Generated outputs:**
+- `qc_report_main.png` - Combined QC visualization
+- `qc_warning_guides.csv` - Guides flagged for potential issues
+- `counts_with_qc_flags.csv` - Full data with QC annotations
+- Individual plots: distribution, outliers, GC bias, etc.
+
+**QC flags for DEG analysis:**
+| Flag | Description | Impact on DEG |
+|------|-------------|---------------|
+| `flag_zero_count` | No reads detected | Will cause errors in DEG tools |
+| `flag_low_count` | Bottom 10% or <10 reads | Unreliable fold-change estimates |
+| `flag_high_outlier` | IQR outlier (high) | May dominate analysis |
+| `flag_extreme_gc` | GC <25% or >75% | Potential amplification bias |
+
+**Visualizations include:**
+- Count distribution (histogram + log-transformed)
+- Cumulative distribution (Lorenz curve for inequality)
+- Outlier detection plot
+- Gene-level boxplots
+- GC content vs count scatter plot
+- QC status summary bar chart
+
 ---
 
 ## Handling Common CRISPR Experiment Issues
