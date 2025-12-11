@@ -199,7 +199,348 @@ python main.py --library /full/path/to/your_library.csv --reads /full/path/to/yo
 This could happen if:
 1. Your guide sequences don't match what's in the reads (check for typos)
 2. The guides are in reverse complement orientation - the tool searches forward by default
-3. There are too many sequencing errors
+3. There are too many sequencing errors - **try using mismatch tolerance** (see below)
+
+---
+
+## Advanced Features
+
+### Mismatch-Tolerant Counting
+
+Real sequencing data has errors (~0.1-1% per base). By default, the tool only counts **exact matches**. If you're missing counts due to sequencing errors, enable mismatch tolerance:
+
+```bash
+# Allow 1 mismatch (recommended for most cases)
+python main.py --max-mismatches 1
+
+# Allow up to 2 mismatches (use with caution - may cause false matches)
+python main.py --max-mismatches 2
+```
+
+**How it works:**
+1. First tries exact matching (fast, using Aho-Corasick)
+2. For unmatched reads, extracts the gRNA region using flanking sequences
+3. Finds the best match within the allowed mismatch threshold
+4. Only counts **unique matches** to avoid ambiguity
+
+**Example output with mismatch tolerance:**
+```
+Counting gRNAs in 100000 reads (max mismatches: 1)...
+  - Exact matches: 85234
+  - Mismatch matches: 8921
+  - Unmatched reads: 5845
+```
+
+### Quality Control Reports
+
+The tool automatically runs quality control checks on your library and counting results:
+
+```bash
+# Run with QC (default)
+python main.py
+
+# Skip QC for faster runs
+python main.py --no-qc
+```
+
+**QC checks include:**
+- **Library validation**: Invalid characters, duplicates, GC content distribution
+- **Counting metrics**: Mapping rate, zero-count guides, count distribution
+- **Bias detection**: GC content bias analysis
+
+A QC report is saved to `output/qc_report.txt` with details like:
+```
+CRISPR gRNA COUNTING - QUALITY CONTROL REPORT
+----------------------------------------------
+1. LIBRARY QUALITY
+   Total guides: 500
+   Valid guides: 500
+   GC distribution: {'low (<30%)': 12, 'normal (30-70%)': 476, 'high (>70%)': 12}
+
+2. COUNTING QUALITY
+   Total reads: 100,000
+   Mapped reads: 94,155 (94.2%)
+   Guides with zero counts: 23 (4.6%)
+   Gini coefficient: 0.456
+
+3. BIAS ANALYSIS
+   GC bias correlation: 0.023
+   Interpretation: No significant GC bias detected
+```
+
+### Understanding QC Metrics
+
+| Metric | Good Value | Warning Signs |
+|--------|------------|---------------|
+| Mapping rate | >80% | <50% suggests library/read mismatch |
+| Zero-count guides | <20% | >50% indicates high dropout |
+| Gini coefficient | 0.3-0.7 | >0.9 = very unequal distribution |
+| GC bias correlation | <0.1 | >0.3 = significant GC bias |
+
+### GC Content Normalization
+
+If GC bias is detected, you can apply normalization:
+
+```bash
+python main.py --gc-normalize
+```
+
+This adjusts counts based on GC content to correct for PCR amplification bias.
+
+### R Visualization and QC for DEG Analysis
+
+Two R tools are provided for QC and visualization:
+
+#### 1. Automated HTML Report (Recommended)
+
+Generate a comprehensive interactive HTML report with a single command:
+
+```bash
+# Basic usage - generates qc_report.html
+Rscript generate_report.R output/grna_counts.csv
+
+# Custom output name
+Rscript generate_report.R output/grna_counts.csv my_experiment_qc
+
+# With custom thresholds
+Rscript generate_report.R output/grna_counts.csv report --min-count 20 --max-zero 15
+```
+
+**Report features:**
+- Executive summary with overall QC status (PASS/WARN/FAIL)
+- Interactive plots (zoom, hover, pan)
+- Automatic issue detection and recommendations
+- Exportable flagged guides table
+- Gene-level statistics
+- Session info for reproducibility
+
+**Available parameters:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-count` | 10 | Minimum count threshold |
+| `--max-zero` | 20 | Maximum zero-count % before FAIL |
+| `--max-gini` | 0.85 | Maximum Gini coefficient |
+| `--gc-threshold` | 0.3 | GC bias correlation threshold |
+| `--output-dir` | (input dir) | Output directory |
+
+#### 2. Standalone QC Script
+
+For programmatic access or custom analysis:
+
+```bash
+# Command line
+Rscript qc_visualization.R output/grna_counts.csv output/qc/
+
+# In R
+source("qc_visualization.R")
+results <- run_qc_analysis("output/grna_counts.csv")
+
+# Access results
+results$data       # Annotated count data
+results$stats      # Summary statistics
+results$plots      # ggplot objects
+results$warnings   # Flagged guides
+```
+
+**Generated outputs:**
+- `qc_report_main.png` - Combined QC visualization
+- `qc_warning_guides.csv` - Guides flagged for potential issues
+- `counts_with_qc_flags.csv` - Full data with QC annotations
+- Individual plots: distribution, outliers, GC bias, etc.
+
+**QC flags for DEG analysis:**
+| Flag | Description | Impact on DEG |
+|------|-------------|---------------|
+| `flag_zero_count` | No reads detected | Will cause errors in DEG tools |
+| `flag_low_count` | Bottom 10% or <10 reads | Unreliable fold-change estimates |
+| `flag_high_outlier` | IQR outlier (high) | May dominate analysis |
+| `flag_extreme_gc` | GC <25% or >75% | Potential amplification bias |
+
+**Visualizations include:**
+- Count distribution (histogram + log-transformed)
+- Cumulative distribution (Lorenz curve for inequality)
+- Outlier detection plot
+- Gene-level boxplots
+- GC content vs count scatter plot
+- QC status summary bar chart
+
+---
+
+## Example Output
+
+### Python Counting Output
+
+Running `python main.py --num-guides 200 --num-reads 50000 --max-mismatches 1`:
+
+```
+======================================================================
+CRISPR GUIDE RNA COUNTER - DEMONSTRATION
+Using Aho-Corasick Algorithm for Efficient Pattern Matching
+======================================================================
+
+STEP 1: Generating gRNA Reference Library
+--------------------------------------------------
+Library saved to output/grna_library.csv
+Total guides: 210
+Unique genes: 51
+
+STEP 2: Generating Simulated NovaSeq Reads
+--------------------------------------------------
+Generating 47500 gRNA-containing reads...
+Generating 2500 noise reads...
+Total reads generated: 50000
+
+STEP 2.5: Library Quality Control
+--------------------------------------------------
+  Valid guides: 210/210
+  GC distribution: {'low (<30%)': 4, 'normal (30-70%)': 204, 'high (>70%)': 2}
+  Warning: 35 guides contain homopolymer runs (4+bp)
+
+STEP 3: Counting gRNAs with Aho-Corasick Algorithm
+--------------------------------------------------
+Using mismatch-tolerant counting (max mismatches: 1)
+Building Aho-Corasick automaton...
+Automaton built in 0.007 seconds
+Counting gRNAs in 50000 reads (max mismatches: 1)...
+Counting completed in 0.868 seconds
+  - Exact matches: 46537
+  - Mismatch matches: 954
+  - Unmatched reads: 2509
+
+STEP 4: Results Summary
+--------------------------------------------------
+Total true gRNA reads: 47500
+Total counted reads: 47491
+Detection rate: 99.98%
+Correlation (counted vs true): 1.0000
+
+TOP 20 COUNTED gRNAs (OUTPUT TABLE)
+======================================================================
+   guide_id     gene_name             sequence  count
+   sgNTC_10 Non-targeting GCGATGTCCCTCCTAGACTG  17682
+   sgJAK2_4          JAK2 GCGTCCCTCCTATGGTGCGC   3195
+  sgKMT2D_2         KMT2D CTGCTTCCCATCATCCTGTG   2214
+   sgBAP1_2          BAP1 CGTGTTTGCAGTCTCTACGG   1480
+  sgEP300_3         EP300 AGAGTCACGCCAAAAGCTTT    949
+   ...
+```
+
+### R QC Report Output
+
+Running `Rscript qc_visualization.R output/grna_counts.csv output/`:
+
+```
+=== CRISPR gRNA Count QC Analysis ===
+
+Reading count data...
+  Loaded 210 guides
+
+Running QC checks...
+
+Calculating statistics...
+
+=== QC SUMMARY ===
+Total guides: 210
+Total reads: 47,491
+Mean count: 226.1
+Median count: 87.0
+CV (coefficient of variation): 2.34
+Gini coefficient: 0.782
+
+QC Results:
+  PASS: 156 ( 74.3 %)
+  WARN: 48 ( 22.9 %)
+  FAIL: 6 ( 2.9 %)
+
+=== WARNINGS FOR DOWNSTREAM DEG ANALYSIS ===
+! WARNING: 6 guides have zero counts - will cause issues in DEG
+! WARNING: High Gini coefficient (>0.8) - very unequal count distribution
+           Consider checking for technical issues or strong selection
+
+Generating visualizations...
+Saving plots...
+  Saved 6 warning guides to qc_warning_guides.csv
+  Saved annotated counts to counts_with_qc_flags.csv
+
+=== QC ANALYSIS COMPLETE ===
+Output saved to: output/
+```
+
+### Generated Files
+
+After running the full pipeline, you'll have:
+
+```
+output/
+├── grna_library.csv          # Guide RNA library
+├── simulated_reads.fastq     # Simulated sequencing reads
+├── grna_counts.csv           # Main count results
+├── gene_level_counts.csv     # Gene-level summary
+├── qc_report.txt             # Python QC report
+├── qc_report.html            # Interactive R report (if R used)
+├── qc_warning_guides.csv     # Flagged guides for review
+├── counts_with_qc_flags.csv  # Counts with QC annotations
+├── qc_count_dist.png         # Count distribution plot
+├── qc_log_dist.png           # Log-transformed distribution
+├── qc_outliers.png           # Outlier visualization
+├── qc_gc_bias.png            # GC bias scatter plot
+├── qc_cumulative.png         # Lorenz curve
+└── qc_report_main.png        # Combined QC panel
+```
+
+### Sample Count Table
+
+The main output `grna_counts.csv` contains:
+
+| guide_id | gene_name | sequence | count |
+|----------|-----------|----------|-------|
+| sgNTC_10 | Non-targeting | GCGATGTCCCTCCTAGACTG | 17682 |
+| sgJAK2_4 | JAK2 | GCGTCCCTCCTATGGTGCGC | 3195 |
+| sgKMT2D_2 | KMT2D | CTGCTTCCCATCATCCTGTG | 2214 |
+| sgBAP1_2 | BAP1 | CGTGTTTGCAGTCTCTACGG | 1480 |
+| ... | ... | ... | ... |
+
+### Sample QC Flags Table
+
+The `counts_with_qc_flags.csv` adds QC columns:
+
+| guide_id | count | flag_zero | flag_low | flag_outlier | qc_status |
+|----------|-------|-----------|----------|--------------|-----------|
+| sgNTC_10 | 17682 | FALSE | FALSE | TRUE | High Outlier |
+| sgJAK2_4 | 3195 | FALSE | FALSE | FALSE | Pass |
+| sgGENE_X | 0 | TRUE | FALSE | FALSE | Zero Count |
+| sgGENE_Y | 5 | FALSE | TRUE | FALSE | Low Count |
+
+---
+
+## Handling Common CRISPR Experiment Issues
+
+### Issue: Low Mapping Rate
+
+**Symptoms:** <50% of reads match guides
+
+**Possible causes & solutions:**
+1. **Wrong library file** - Verify your library matches the experiment
+2. **Adapter contamination** - Trim adapters before counting
+3. **High error rate** - Use `--max-mismatches 1`
+
+### Issue: Many Guides with Zero Counts
+
+**Symptoms:** >30% of guides have count=0
+
+**Possible causes & solutions:**
+1. **Strong selection** - Expected in some screens (not an error)
+2. **Library representation issues** - Check original library QC
+3. **Sequencing depth too low** - More reads needed
+
+### Issue: Extreme Count Distribution
+
+**Symptoms:** A few guides dominate all counts (Gini >0.9)
+
+**Possible causes & solutions:**
+1. **Strong selection pressure** - Expected in drug screens
+2. **PCR bias** - Consider GC normalization
+3. **Contamination** - Check for specific guide dominance
 
 ---
 
@@ -211,6 +552,11 @@ This could happen if:
 | `python main.py --help` | Show all available options |
 | `python main.py --explain` | Explain how the algorithm works |
 | `python main.py -l LIB -r READS -o OUT` | Count guides from your files |
+| `python main.py --max-mismatches 1` | Enable mismatch-tolerant counting |
+| `python main.py --no-qc` | Skip quality control checks |
+| `python main.py --gc-normalize` | Apply GC content normalization |
+| `Rscript generate_report.R counts.csv` | Generate interactive HTML QC report |
+| `Rscript qc_visualization.R counts.csv` | Run standalone R QC analysis |
 
 ---
 
@@ -225,9 +571,53 @@ If you run into problems:
 
 ## Summary
 
-1. **Install**: `pip install -r requirements.txt`
-2. **Try demo**: `python main.py`
-3. **Use your data**: `python main.py -l library.csv -r reads.fastq -o counts.csv`
-4. **Open results**: Look at the CSV file in Excel
+### Quick Start Pipeline
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Run the demo (generates example data)
+python main.py
+
+# 3. Or use your own data
+python main.py -l your_library.csv -r your_reads.fastq -o counts.csv
+
+# 4. Handle sequencing errors (if counts are low)
+python main.py -l library.csv -r reads.fastq --max-mismatches 1
+
+# 5. Generate R QC report (optional, requires R)
+Rscript generate_report.R output/grna_counts.csv
+
+# 6. Open results
+# - output/grna_counts.csv (main results)
+# - output/qc_report.txt (QC summary)
+# - output/qc_report.html (interactive report, if R used)
+```
+
+### Workflow Diagram
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  gRNA Library   │     │  Sequencing      │     │    Counting     │
+│  (CSV file)     │────▶│  Reads (FASTQ)   │────▶│  (Aho-Corasick) │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                        ┌─────────────────────────────────┼─────────────────────────────────┐
+                        │                                 │                                 │
+                        ▼                                 ▼                                 ▼
+               ┌─────────────────┐              ┌─────────────────┐              ┌─────────────────┐
+               │  Count Table    │              │  Python QC      │              │  R QC Report    │
+               │  (CSV)          │              │  (TXT)          │              │  (HTML)         │
+               └─────────────────┘              └─────────────────┘              └─────────────────┘
+                        │                                                                 │
+                        └──────────────────────────┬──────────────────────────────────────┘
+                                                   │
+                                                   ▼
+                                          ┌─────────────────┐
+                                          │  Downstream DEG │
+                                          │  Analysis       │
+                                          └─────────────────┘
+```
 
 That's all you need to count guide RNAs in your CRISPR screening data!
