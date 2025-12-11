@@ -277,6 +277,182 @@ def count_grnas_in_fasta(
     return counter.get_count_table(counts)
 
 
+class MismatchTolerantCounter:
+    """
+    Extended gRNA counter with mismatch tolerance for handling sequencing errors.
+
+    Sub-questions addressed in design:
+    1. How to handle reads with 1-2 sequencing errors? -> Hamming distance matching
+    2. How to avoid ambiguous matches? -> Only count unique matches
+    3. How to maintain efficiency? -> First try exact match, then mismatch
+    4. How to extract gRNA from reads? -> Use flanking patterns
+
+    This counter first attempts exact matching with Aho-Corasick,
+    then falls back to mismatch-tolerant matching for unmatched reads.
+    """
+
+    def __init__(
+        self,
+        library: pd.DataFrame,
+        sequence_col: str = 'sequence',
+        max_mismatches: int = 1
+    ):
+        """
+        Initialize counter with mismatch tolerance.
+
+        Args:
+            library: DataFrame containing gRNA sequences
+            sequence_col: Name of the column containing sequences
+            max_mismatches: Maximum mismatches to allow (0-2 recommended)
+        """
+        self.library = library.copy()
+        self.sequence_col = sequence_col
+        self.max_mismatches = max_mismatches
+        self.sequences = library[sequence_col].tolist()
+        self.sequence_length = len(self.sequences[0]) if self.sequences else 20
+
+        # Build exact match automaton
+        self.exact_counter = GRNACounter(library, sequence_col)
+
+        # Pre-compute for mismatch matching
+        self._build_mismatch_index()
+
+    def _build_mismatch_index(self):
+        """Build index structures for efficient mismatch matching."""
+        print(f"Building mismatch index for {len(self.sequences)} sequences...")
+        # Store sequences as uppercase for comparison
+        self.sequences_upper = [s.upper() for s in self.sequences]
+
+    def _hamming_distance(self, seq1: str, seq2: str) -> int:
+        """Calculate Hamming distance between two sequences."""
+        if len(seq1) != len(seq2):
+            return max(len(seq1), len(seq2))
+        return sum(c1 != c2 for c1, c2 in zip(seq1, seq2))
+
+    def _find_mismatch_match(self, query: str) -> Tuple[Optional[int], int]:
+        """
+        Find best matching guide with mismatch tolerance.
+
+        Args:
+            query: Query sequence (must be same length as library sequences)
+
+        Returns:
+            Tuple of (best_match_idx or None, distance)
+        """
+        if len(query) != self.sequence_length:
+            return None, -1
+
+        query_upper = query.upper()
+        best_idx = None
+        best_dist = self.max_mismatches + 1
+        match_count = 0
+
+        for idx, lib_seq in enumerate(self.sequences_upper):
+            dist = self._hamming_distance(query_upper, lib_seq)
+
+            if dist == 0:
+                return idx, 0
+
+            if dist <= self.max_mismatches:
+                match_count += 1
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = idx
+
+        # Only return unique matches
+        if match_count == 1:
+            return best_idx, best_dist
+
+        return None, best_dist if match_count > 0 else -1
+
+    def _extract_grna(self, read: str) -> Optional[str]:
+        """Extract gRNA from read using flanking sequences."""
+        read_upper = read.upper()
+
+        # Common flanking patterns
+        upstream_patterns = ["ACCG", "CACCG"]
+        downstream_patterns = ["GTTT", "GTTTT"]
+
+        for up in upstream_patterns:
+            pos = read_upper.find(up)
+            if pos >= 0:
+                start = pos + len(up)
+                end = start + self.sequence_length
+                if end <= len(read):
+                    return read[start:end]
+
+        for down in downstream_patterns:
+            pos = read_upper.find(down)
+            if pos >= self.sequence_length:
+                start = pos - self.sequence_length
+                return read[start:pos]
+
+        return None
+
+    def count_reads(
+        self,
+        reads: List[str],
+        count_multiple: bool = False,
+        search_reverse_complement: bool = False,
+        use_mismatch_fallback: bool = True
+    ) -> Dict[int, int]:
+        """
+        Count gRNA occurrences with optional mismatch tolerance.
+
+        Args:
+            reads: List of sequencing reads
+            count_multiple: If True, count multiple matches per read
+            search_reverse_complement: Also search reverse complement
+            use_mismatch_fallback: Try mismatch matching for unmatched reads
+
+        Returns:
+            Dictionary mapping library index to count
+        """
+        print(f"Counting gRNAs in {len(reads)} reads (max mismatches: {self.max_mismatches})...")
+        start_time = time.time()
+
+        counts = defaultdict(int)
+        exact_matches = 0
+        mismatch_matches = 0
+        unmatched = 0
+
+        for read in reads:
+            matched = False
+
+            # First try exact match
+            for end_idx, library_idx in self.exact_counter.automaton.iter(read):
+                counts[library_idx] += 1
+                exact_matches += 1
+                matched = True
+                if not count_multiple:
+                    break
+
+            # Fallback to mismatch matching
+            if not matched and use_mismatch_fallback and self.max_mismatches > 0:
+                grna = self._extract_grna(read)
+                if grna:
+                    idx, dist = self._find_mismatch_match(grna)
+                    if idx is not None:
+                        counts[idx] += 1
+                        mismatch_matches += 1
+                        matched = True
+
+            if not matched:
+                unmatched += 1
+
+        count_time = time.time() - start_time
+        print(f"Counting completed in {count_time:.3f} seconds")
+        print(f"  - Exact matches: {exact_matches}")
+        print(f"  - Mismatch matches: {mismatch_matches}")
+        print(f"  - Unmatched reads: {unmatched}")
+
+        return dict(counts)
+
+    def get_count_table(self, counts: Dict[int, int]) -> pd.DataFrame:
+        """Generate a count table from counting results."""
+        return self.exact_counter.get_count_table(counts)
+
+
 class AhoCorasickExplainer:
     """
     Educational class to explain how the Aho-Corasick algorithm works
