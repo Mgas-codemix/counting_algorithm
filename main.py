@@ -31,7 +31,11 @@ from sequence_generator import (
     save_reads_fastq,
     save_reads_fasta
 )
-from grna_counter import GRNACounter, AhoCorasickExplainer
+from grna_counter import GRNACounter, MismatchTolerantCounter, AhoCorasickExplainer
+from grna_qc import (
+    validate_library, generate_qc_report, detect_gc_bias,
+    normalize_by_gc, GRNAException
+)
 
 
 def run_demo(
@@ -41,7 +45,9 @@ def run_demo(
     error_rate: float = 0.001,
     noise_fraction: float = 0.05,
     output_dir: str = "output",
-    seed: int = 42
+    seed: int = 42,
+    max_mismatches: int = 0,
+    run_qc: bool = True
 ) -> pd.DataFrame:
     """
     Run a complete demonstration of the gRNA counting pipeline.
@@ -54,6 +60,8 @@ def run_demo(
         noise_fraction: Fraction of noise reads
         output_dir: Directory for output files
         seed: Random seed
+        max_mismatches: Maximum allowed mismatches for fuzzy matching
+        run_qc: Whether to run quality control checks
 
     Returns:
         DataFrame with count results
@@ -96,10 +104,29 @@ def run_demo(
     save_reads_fastq(reads, str(fastq_file))
     print()
 
+    # Step 2.5: Run Library QC (if enabled)
+    if run_qc:
+        print("STEP 2.5: Library Quality Control")
+        print("-" * 50)
+        try:
+            lib_qc = validate_library(library)
+            print(f"  Valid guides: {lib_qc.valid_guides}/{lib_qc.total_guides}")
+            print(f"  GC distribution: {lib_qc.gc_distribution}")
+            if lib_qc.warnings:
+                for w in lib_qc.warnings[:3]:
+                    print(f"  Warning: {w}")
+        except GRNAException as e:
+            print(f"  QC Error: {e}")
+        print()
+
     # Step 3: Count gRNAs using Aho-Corasick
     print("STEP 3: Counting gRNAs with Aho-Corasick Algorithm")
     print("-" * 50)
-    counter = GRNACounter(library)
+    if max_mismatches > 0:
+        print(f"Using mismatch-tolerant counting (max mismatches: {max_mismatches})")
+        counter = MismatchTolerantCounter(library, max_mismatches=max_mismatches)
+    else:
+        counter = GRNACounter(library)
     counted = counter.count_reads(reads)
     result_table = counter.get_count_table(counted)
     print()
@@ -149,6 +176,24 @@ def run_demo(
     gene_file = output_path / "gene_level_counts.csv"
     gene_counts.to_csv(gene_file)
     print(f"\nGene-level summary saved to: {gene_file}")
+
+    # Step 5: Quality Control Report (if enabled)
+    if run_qc:
+        print("\n" + "="*70)
+        print("STEP 5: Quality Control Report")
+        print("="*70)
+        qc_report = generate_qc_report(library, counted, len(reads))
+        print(qc_report)
+
+        # GC bias analysis
+        gc_corr, gc_interp = detect_gc_bias(library, counted)
+        print(f"\nGC Bias Analysis: {gc_interp}")
+
+        # Save QC report
+        qc_file = output_path / "qc_report.txt"
+        with open(qc_file, 'w') as f:
+            f.write(qc_report)
+        print(f"\nQC report saved to: {qc_file}")
 
     print("\n" + "="*70)
     print("DEMO COMPLETE")
@@ -254,6 +299,12 @@ For more information about the algorithm:
                            help='Fraction of noise reads (default: 0.05)')
     demo_group.add_argument('--seed', type=int, default=42,
                            help='Random seed (default: 42)')
+    demo_group.add_argument('--max-mismatches', type=int, default=0,
+                           help='Maximum mismatches for fuzzy matching (default: 0=exact only)')
+    demo_group.add_argument('--no-qc', action='store_true',
+                           help='Skip quality control checks')
+    demo_group.add_argument('--gc-normalize', action='store_true',
+                           help='Apply GC content normalization to counts')
 
     # File mode options
     file_group = parser.add_argument_group('File options')
@@ -296,7 +347,9 @@ For more information about the algorithm:
         error_rate=args.error_rate,
         noise_fraction=args.noise_fraction,
         output_dir=args.output_dir,
-        seed=args.seed
+        seed=args.seed,
+        max_mismatches=args.max_mismatches,
+        run_qc=not args.no_qc
     )
 
 

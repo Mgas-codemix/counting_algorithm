@@ -1,0 +1,14 @@
+"metric","value"
+"total_guides",210
+"total_reads",47491
+"mean_count",226.147619047619
+"median_count",58.5
+"sd_count",1251.65497413489
+"cv",5.53468119366461
+"gini",0.795692717717944
+"zero_count_guides",1
+"low_count_guides",25
+"high_outliers",17
+"qc_pass",168
+"qc_warn",41
+"qc_fail",1
