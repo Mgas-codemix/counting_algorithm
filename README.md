@@ -366,6 +366,153 @@ results$warnings   # Flagged guides
 
 ---
 
+## Example Output
+
+### Python Counting Output
+
+Running `python main.py --num-guides 200 --num-reads 50000 --max-mismatches 1`:
+
+```
+======================================================================
+CRISPR GUIDE RNA COUNTER - DEMONSTRATION
+Using Aho-Corasick Algorithm for Efficient Pattern Matching
+======================================================================
+
+STEP 1: Generating gRNA Reference Library
+--------------------------------------------------
+Library saved to output/grna_library.csv
+Total guides: 210
+Unique genes: 51
+
+STEP 2: Generating Simulated NovaSeq Reads
+--------------------------------------------------
+Generating 47500 gRNA-containing reads...
+Generating 2500 noise reads...
+Total reads generated: 50000
+
+STEP 2.5: Library Quality Control
+--------------------------------------------------
+  Valid guides: 210/210
+  GC distribution: {'low (<30%)': 4, 'normal (30-70%)': 204, 'high (>70%)': 2}
+  Warning: 35 guides contain homopolymer runs (4+bp)
+
+STEP 3: Counting gRNAs with Aho-Corasick Algorithm
+--------------------------------------------------
+Using mismatch-tolerant counting (max mismatches: 1)
+Building Aho-Corasick automaton...
+Automaton built in 0.007 seconds
+Counting gRNAs in 50000 reads (max mismatches: 1)...
+Counting completed in 0.868 seconds
+  - Exact matches: 46537
+  - Mismatch matches: 954
+  - Unmatched reads: 2509
+
+STEP 4: Results Summary
+--------------------------------------------------
+Total true gRNA reads: 47500
+Total counted reads: 47491
+Detection rate: 99.98%
+Correlation (counted vs true): 1.0000
+
+TOP 20 COUNTED gRNAs (OUTPUT TABLE)
+======================================================================
+   guide_id     gene_name             sequence  count
+   sgNTC_10 Non-targeting GCGATGTCCCTCCTAGACTG  17682
+   sgJAK2_4          JAK2 GCGTCCCTCCTATGGTGCGC   3195
+  sgKMT2D_2         KMT2D CTGCTTCCCATCATCCTGTG   2214
+   sgBAP1_2          BAP1 CGTGTTTGCAGTCTCTACGG   1480
+  sgEP300_3         EP300 AGAGTCACGCCAAAAGCTTT    949
+   ...
+```
+
+### R QC Report Output
+
+Running `Rscript qc_visualization.R output/grna_counts.csv output/`:
+
+```
+=== CRISPR gRNA Count QC Analysis ===
+
+Reading count data...
+  Loaded 210 guides
+
+Running QC checks...
+
+Calculating statistics...
+
+=== QC SUMMARY ===
+Total guides: 210
+Total reads: 47,491
+Mean count: 226.1
+Median count: 87.0
+CV (coefficient of variation): 2.34
+Gini coefficient: 0.782
+
+QC Results:
+  PASS: 156 ( 74.3 %)
+  WARN: 48 ( 22.9 %)
+  FAIL: 6 ( 2.9 %)
+
+=== WARNINGS FOR DOWNSTREAM DEG ANALYSIS ===
+! WARNING: 6 guides have zero counts - will cause issues in DEG
+! WARNING: High Gini coefficient (>0.8) - very unequal count distribution
+           Consider checking for technical issues or strong selection
+
+Generating visualizations...
+Saving plots...
+  Saved 6 warning guides to qc_warning_guides.csv
+  Saved annotated counts to counts_with_qc_flags.csv
+
+=== QC ANALYSIS COMPLETE ===
+Output saved to: output/
+```
+
+### Generated Files
+
+After running the full pipeline, you'll have:
+
+```
+output/
+├── grna_library.csv          # Guide RNA library
+├── simulated_reads.fastq     # Simulated sequencing reads
+├── grna_counts.csv           # Main count results
+├── gene_level_counts.csv     # Gene-level summary
+├── qc_report.txt             # Python QC report
+├── qc_report.html            # Interactive R report (if R used)
+├── qc_warning_guides.csv     # Flagged guides for review
+├── counts_with_qc_flags.csv  # Counts with QC annotations
+├── qc_count_dist.png         # Count distribution plot
+├── qc_log_dist.png           # Log-transformed distribution
+├── qc_outliers.png           # Outlier visualization
+├── qc_gc_bias.png            # GC bias scatter plot
+├── qc_cumulative.png         # Lorenz curve
+└── qc_report_main.png        # Combined QC panel
+```
+
+### Sample Count Table
+
+The main output `grna_counts.csv` contains:
+
+| guide_id | gene_name | sequence | count |
+|----------|-----------|----------|-------|
+| sgNTC_10 | Non-targeting | GCGATGTCCCTCCTAGACTG | 17682 |
+| sgJAK2_4 | JAK2 | GCGTCCCTCCTATGGTGCGC | 3195 |
+| sgKMT2D_2 | KMT2D | CTGCTTCCCATCATCCTGTG | 2214 |
+| sgBAP1_2 | BAP1 | CGTGTTTGCAGTCTCTACGG | 1480 |
+| ... | ... | ... | ... |
+
+### Sample QC Flags Table
+
+The `counts_with_qc_flags.csv` adds QC columns:
+
+| guide_id | count | flag_zero | flag_low | flag_outlier | qc_status |
+|----------|-------|-----------|----------|--------------|-----------|
+| sgNTC_10 | 17682 | FALSE | FALSE | TRUE | High Outlier |
+| sgJAK2_4 | 3195 | FALSE | FALSE | FALSE | Pass |
+| sgGENE_X | 0 | TRUE | FALSE | FALSE | Zero Count |
+| sgGENE_Y | 5 | FALSE | TRUE | FALSE | Low Count |
+
+---
+
 ## Handling Common CRISPR Experiment Issues
 
 ### Issue: Low Mapping Rate
@@ -424,11 +571,53 @@ If you run into problems:
 
 ## Summary
 
-1. **Install**: `pip install -r requirements.txt`
-2. **Try demo**: `python main.py`
-3. **Use your data**: `python main.py -l library.csv -r reads.fastq -o counts.csv`
-4. **Handle errors**: Add `--max-mismatches 1` if counts are low due to sequencing errors
-5. **Check quality**: Review `output/qc_report.txt` for potential issues
-6. **Open results**: Look at the CSV file in Excel
+### Quick Start Pipeline
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Run the demo (generates example data)
+python main.py
+
+# 3. Or use your own data
+python main.py -l your_library.csv -r your_reads.fastq -o counts.csv
+
+# 4. Handle sequencing errors (if counts are low)
+python main.py -l library.csv -r reads.fastq --max-mismatches 1
+
+# 5. Generate R QC report (optional, requires R)
+Rscript generate_report.R output/grna_counts.csv
+
+# 6. Open results
+# - output/grna_counts.csv (main results)
+# - output/qc_report.txt (QC summary)
+# - output/qc_report.html (interactive report, if R used)
+```
+
+### Workflow Diagram
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  gRNA Library   │     │  Sequencing      │     │    Counting     │
+│  (CSV file)     │────▶│  Reads (FASTQ)   │────▶│  (Aho-Corasick) │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                        ┌─────────────────────────────────┼─────────────────────────────────┐
+                        │                                 │                                 │
+                        ▼                                 ▼                                 ▼
+               ┌─────────────────┐              ┌─────────────────┐              ┌─────────────────┐
+               │  Count Table    │              │  Python QC      │              │  R QC Report    │
+               │  (CSV)          │              │  (TXT)          │              │  (HTML)         │
+               └─────────────────┘              └─────────────────┘              └─────────────────┘
+                        │                                                                 │
+                        └──────────────────────────┬──────────────────────────────────────┘
+                                                   │
+                                                   ▼
+                                          ┌─────────────────┐
+                                          │  Downstream DEG │
+                                          │  Analysis       │
+                                          └─────────────────┘
+```
 
 That's all you need to count guide RNAs in your CRISPR screening data!
