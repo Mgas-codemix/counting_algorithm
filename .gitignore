@@ -42,3 +42,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# R generated files
+Rplots.pdf
+*.RData
+*.Rhistory
