@@ -36,7 +36,6 @@ from grna_qc import (
     validate_library, generate_qc_report, detect_gc_bias,
     normalize_by_gc, GRNAException
 )
-from question_generator import ask_question, EXAMPLE_QUESTIONS
 
 
 def run_demo(
@@ -285,10 +284,6 @@ For more information about the algorithm:
                         help='Run demonstration mode (default)')
     parser.add_argument('--explain', action='store_true',
                         help='Explain the Aho-Corasick algorithm')
-    parser.add_argument('--ask', type=str, metavar='QUESTION',
-                        help='Ask a question about CRISPR screening (uses sub-question methodology)')
-    parser.add_argument('--list-questions', action='store_true',
-                        help='List example questions you can ask')
 
     # Demo mode options
     demo_group = parser.add_argument_group('Demo options')
@@ -330,20 +325,6 @@ For more information about the algorithm:
     # Handle explain mode
     if args.explain:
         AhoCorasickExplainer.explain_algorithm()
-        return
-
-    # Handle question mode
-    if args.list_questions:
-        print("Example questions you can ask with --ask:")
-        print("-" * 50)
-        for q in EXAMPLE_QUESTIONS:
-            print(f"  {q}")
-        return
-
-    if args.ask:
-        print("Analyzing your question using sub-question methodology...")
-        print()
-        ask_question(args.ask)
         return
 
     # Handle file mode
