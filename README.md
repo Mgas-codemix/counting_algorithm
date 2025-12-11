@@ -289,15 +289,57 @@ This adjusts counts based on GC content to correct for PCR amplification bias.
 
 ### R Visualization and QC for DEG Analysis
 
-An R script is provided for detailed visualization and QC specifically for downstream differential expression (DEG) analysis:
+Two R tools are provided for QC and visualization:
+
+#### 1. Automated HTML Report (Recommended)
+
+Generate a comprehensive interactive HTML report with a single command:
 
 ```bash
-# Run from command line
+# Basic usage - generates qc_report.html
+Rscript generate_report.R output/grna_counts.csv
+
+# Custom output name
+Rscript generate_report.R output/grna_counts.csv my_experiment_qc
+
+# With custom thresholds
+Rscript generate_report.R output/grna_counts.csv report --min-count 20 --max-zero 15
+```
+
+**Report features:**
+- Executive summary with overall QC status (PASS/WARN/FAIL)
+- Interactive plots (zoom, hover, pan)
+- Automatic issue detection and recommendations
+- Exportable flagged guides table
+- Gene-level statistics
+- Session info for reproducibility
+
+**Available parameters:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-count` | 10 | Minimum count threshold |
+| `--max-zero` | 20 | Maximum zero-count % before FAIL |
+| `--max-gini` | 0.85 | Maximum Gini coefficient |
+| `--gc-threshold` | 0.3 | GC bias correlation threshold |
+| `--output-dir` | (input dir) | Output directory |
+
+#### 2. Standalone QC Script
+
+For programmatic access or custom analysis:
+
+```bash
+# Command line
 Rscript qc_visualization.R output/grna_counts.csv output/qc/
 
-# Or in R
+# In R
 source("qc_visualization.R")
 results <- run_qc_analysis("output/grna_counts.csv")
+
+# Access results
+results$data       # Annotated count data
+results$stats      # Summary statistics
+results$plots      # ggplot objects
+results$warnings   # Flagged guides
 ```
 
 **Generated outputs:**
@@ -366,6 +408,8 @@ results <- run_qc_analysis("output/grna_counts.csv")
 | `python main.py --max-mismatches 1` | Enable mismatch-tolerant counting |
 | `python main.py --no-qc` | Skip quality control checks |
 | `python main.py --gc-normalize` | Apply GC content normalization |
+| `Rscript generate_report.R counts.csv` | Generate interactive HTML QC report |
+| `Rscript qc_visualization.R counts.csv` | Run standalone R QC analysis |
 
 ---
 

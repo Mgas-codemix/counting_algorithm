@@ -1,0 +1,676 @@
+---
+title: "CRISPR gRNA Counting - Quality Control Report"
+author: "Automated QC Pipeline"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    df_print: paged
+    fig_width: 10
+    fig_height: 6
+params:
+  counts_file: "output/grna_counts.csv"
+  min_count_threshold: 10
+  max_zero_pct: 20
+  max_gini: 0.85
+  gc_bias_threshold: 0.3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  out.width = "100%"
+)
+
+# Auto-install and load required packages
+required_packages <- c("ggplot2", "dplyr", "tidyr", "scales", "knitr",
+                       "kableExtra", "plotly", "DT", "viridis")
+
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, repos = "https://cloud.r-project.org/", quiet = TRUE)
+  }
+  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+}
+
+# Set theme
+theme_set(theme_minimal(base_size = 12))
+```
+
+```{r load-data, include=FALSE}
+# Load the count data
+if (!file.exists(params$counts_file)) {
+  stop(paste("Count file not found:", params$counts_file))
+}
+
+counts_df <- read.csv(params$counts_file, stringsAsFactors = FALSE)
+
+# Ensure required columns exist
+if (!"count" %in% names(counts_df)) {
+  stop("Count file must have a 'count' column")
+}
+```
+
+```{r utility-functions, include=FALSE}
+# Calculate GC content
+calculate_gc <- function(seq) {
+  seq <- toupper(seq)
+  gc_count <- nchar(gsub("[^GC]", "", seq))
+  total <- nchar(gsub("[^ATGC]", "", seq))
+  if (total == 0) return(NA)
+  return(gc_count / total)
+}
+
+# Calculate Gini coefficient
+calculate_gini <- function(x) {
+  x <- sort(x[!is.na(x) & x >= 0])
+  n <- length(x)
+  if (n == 0 || sum(x) == 0) return(0)
+  gini <- (2 * sum((1:n) * x) - (n + 1) * sum(x)) / (n * sum(x))
+  return(max(0, min(1, gini)))
+}
+
+# Detect outliers (IQR method)
+detect_outliers_iqr <- function(x, k = 1.5) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  return(x < (q1 - k * iqr) | x > (q3 + k * iqr))
+}
+
+# Status badge HTML
+status_badge <- function(status, text = NULL) {
+  if (is.null(text)) text <- status
+  color <- switch(status,
+    "PASS" = "#28a745",
+    "WARN" = "#ffc107",
+    "FAIL" = "#dc3545",
+    "#6c757d"
+  )
+  sprintf('<span style="background-color:%s; color:white; padding:3px 10px; border-radius:4px; font-weight:bold;">%s</span>',
+          color, text)
+}
+```
+
+```{r calculate-metrics, include=FALSE}
+# Add GC content if sequence column exists
+if ("sequence" %in% names(counts_df)) {
+  counts_df$gc_content <- sapply(counts_df$sequence, calculate_gc)
+}
+
+# Calculate all QC metrics
+metrics <- list(
+  total_guides = nrow(counts_df),
+  total_reads = sum(counts_df$count),
+  mean_count = mean(counts_df$count),
+  median_count = median(counts_df$count),
+  sd_count = sd(counts_df$count),
+  min_count = min(counts_df$count),
+  max_count = max(counts_df$count),
+  cv = sd(counts_df$count) / mean(counts_df$count),
+  gini = calculate_gini(counts_df$count),
+  zero_count = sum(counts_df$count == 0),
+  zero_pct = sum(counts_df$count == 0) / nrow(counts_df) * 100,
+  low_count = sum(counts_df$count < params$min_count_threshold & counts_df$count > 0),
+  low_pct = sum(counts_df$count < params$min_count_threshold & counts_df$count > 0) / nrow(counts_df) * 100
+)
+
+# Calculate percentiles
+metrics$p10 <- quantile(counts_df$count, 0.10)
+metrics$p25 <- quantile(counts_df$count, 0.25)
+metrics$p75 <- quantile(counts_df$count, 0.75)
+metrics$p90 <- quantile(counts_df$count, 0.90)
+
+# GC bias if available
+if ("gc_content" %in% names(counts_df)) {
+  metrics$gc_correlation <- cor(counts_df$gc_content, log10(counts_df$count + 1),
+                                 use = "complete.obs", method = "spearman")
+} else {
+  metrics$gc_correlation <- NA
+}
+
+# Add QC flags to data
+counts_df <- counts_df %>%
+  mutate(
+    flag_zero = count == 0,
+    flag_low = count > 0 & count < params$min_count_threshold,
+    flag_outlier_high = detect_outliers_iqr(count, k = 3) & count > median(count),
+    flag_outlier_low = detect_outliers_iqr(count, k = 3) & count < median(count),
+    qc_status = case_when(
+      flag_zero ~ "Zero Count",
+      flag_low ~ "Low Count",
+      flag_outlier_high ~ "High Outlier",
+      flag_outlier_low ~ "Low Outlier",
+      TRUE ~ "Pass"
+    )
+  )
+
+# Determine overall QC status
+overall_status <- "PASS"
+issues <- c()
+
+if (metrics$zero_pct > params$max_zero_pct) {
+  overall_status <- "FAIL"
+  issues <- c(issues, paste0("High zero-count rate: ", round(metrics$zero_pct, 1), "%"))
+}
+
+if (metrics$gini > params$max_gini) {
+  if (overall_status != "FAIL") overall_status <- "WARN"
+  issues <- c(issues, paste0("High Gini coefficient: ", round(metrics$gini, 3)))
+}
+
+if (!is.na(metrics$gc_correlation) && abs(metrics$gc_correlation) > params$gc_bias_threshold) {
+  if (overall_status != "FAIL") overall_status <- "WARN"
+  issues <- c(issues, paste0("GC bias detected: r = ", round(metrics$gc_correlation, 3)))
+}
+
+if (metrics$low_pct > 30) {
+  if (overall_status != "FAIL") overall_status <- "WARN"
+  issues <- c(issues, paste0("Many low-count guides: ", round(metrics$low_pct, 1), "%"))
+}
+```
+
+# Executive Summary {.tabset}
+
+## Overview
+
+<div style="background-color:#f8f9fa; padding:20px; border-radius:10px; margin-bottom:20px;">
+
+### Overall QC Status: `r status_badge(overall_status)`
+
+**File analyzed:** `r basename(params$counts_file)`
+
+**Analysis date:** `r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`
+
+</div>
+
+```{r summary-table, echo=FALSE}
+summary_df <- data.frame(
+  Metric = c("Total Guides", "Total Reads", "Median Count", "Mean Count",
+             "Zero-Count Guides", "Low-Count Guides", "Gini Coefficient"),
+  Value = c(
+    format(metrics$total_guides, big.mark = ","),
+    format(metrics$total_reads, big.mark = ","),
+    format(round(metrics$median_count), big.mark = ","),
+    format(round(metrics$mean_count), big.mark = ","),
+    paste0(metrics$zero_count, " (", round(metrics$zero_pct, 1), "%)"),
+    paste0(metrics$low_count, " (", round(metrics$low_pct, 1), "%)"),
+    round(metrics$gini, 3)
+  ),
+  Status = c(
+    "INFO",
+    "INFO",
+    "INFO",
+    "INFO",
+    ifelse(metrics$zero_pct > params$max_zero_pct, "FAIL",
+           ifelse(metrics$zero_pct > 10, "WARN", "PASS")),
+    ifelse(metrics$low_pct > 30, "WARN", "PASS"),
+    ifelse(metrics$gini > params$max_gini, "WARN", "PASS")
+  )
+)
+
+kable(summary_df, align = c("l", "r", "c"), escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  column_spec(3, color = ifelse(summary_df$Status == "PASS", "#28a745",
+                                ifelse(summary_df$Status == "WARN", "#ffc107",
+                                       ifelse(summary_df$Status == "FAIL", "#dc3545", "#6c757d"))),
+              bold = TRUE)
+```
+
+## Issues Detected
+
+```{r issues-list, echo=FALSE, results='asis'}
+if (length(issues) == 0) {
+  cat('<div style="background-color:#d4edda; padding:15px; border-radius:5px; border-left:5px solid #28a745;">\n')
+  cat('<strong>No significant issues detected.</strong> Data quality appears suitable for downstream DEG analysis.\n')
+  cat('</div>\n')
+} else {
+  cat('<div style="background-color:#fff3cd; padding:15px; border-radius:5px; border-left:5px solid #ffc107;">\n')
+  cat('<strong>The following issues were detected:</strong>\n')
+  cat('<ul>\n')
+  for (issue in issues) {
+    cat(paste0('<li>', issue, '</li>\n'))
+  }
+  cat('</ul>\n')
+  cat('</div>\n')
+}
+```
+
+## Recommendations
+
+```{r recommendations, echo=FALSE, results='asis'}
+cat('<div style="background-color:#e7f3ff; padding:15px; border-radius:5px; border-left:5px solid #0066cc;">\n')
+cat('<strong>Recommendations for downstream analysis:</strong>\n')
+cat('<ul>\n')
+
+if (metrics$zero_pct > 5) {
+  cat('<li><strong>Zero-count guides:</strong> Consider filtering guides with zero counts before DEG analysis, or use methods that handle zeros (e.g., DESeq2 with appropriate shrinkage).</li>\n')
+}
+
+if (metrics$low_pct > 20) {
+  cat('<li><strong>Low-count guides:</strong> Consider increasing the minimum count threshold for filtering, or use size factor normalization.</li>\n')
+}
+
+if (metrics$gini > 0.7) {
+  cat('<li><strong>Unequal distribution:</strong> The count distribution is highly skewed. Verify this is expected for your screen type. Consider using robust normalization methods.</li>\n')
+}
+
+if (!is.na(metrics$gc_correlation) && abs(metrics$gc_correlation) > 0.2) {
+  cat('<li><strong>GC bias:</strong> Consider GC-content normalization or include GC as a covariate in your model.</li>\n')
+}
+
+if (metrics$cv > 2) {
+  cat('<li><strong>High variability:</strong> High coefficient of variation detected. Consider additional QC or replicate analysis.</li>\n')
+}
+
+cat('<li><strong>General:</strong> Always inspect flagged guides before filtering. Some may represent true biological signal.</li>\n')
+cat('</ul>\n')
+cat('</div>\n')
+```
+
+---
+
+# Count Distribution Analysis
+
+## Distribution Overview {.tabset}
+
+### Histogram
+
+```{r hist-plot, echo=FALSE, fig.height=5}
+p <- ggplot(counts_df, aes(x = count)) +
+  geom_histogram(bins = 50, fill = "#3498db", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = metrics$median_count, color = "#e74c3c",
+             linetype = "dashed", size = 1) +
+  geom_vline(xintercept = metrics$mean_count, color = "#f39c12",
+             linetype = "dashed", size = 1) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Count Distribution",
+    subtitle = paste("Red dashed = Median (", format(round(metrics$median_count), big.mark=","),
+                    "), Orange dashed = Mean (", format(round(metrics$mean_count), big.mark=","), ")", sep=""),
+    x = "Read Count",
+    y = "Number of Guides"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggplotly(p, tooltip = c("x", "y"))
+```
+
+### Log-Transformed
+
+```{r log-hist, echo=FALSE, fig.height=5}
+counts_df$log_count <- log10(counts_df$count + 1)
+
+p <- ggplot(counts_df, aes(x = log_count)) +
+  geom_histogram(bins = 50, fill = "#27ae60", color = "white", alpha = 0.8) +
+  geom_density(aes(y = ..count.. * 0.15), color = "#2c3e50", size = 1) +
+  labs(
+    title = "Log10-Transformed Count Distribution",
+    subtitle = "Log10(count + 1) - better visualization of spread",
+    x = "Log10(Count + 1)",
+    y = "Number of Guides"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggplotly(p, tooltip = c("x", "y"))
+```
+
+### Box Plot
+
+```{r boxplot, echo=FALSE, fig.height=4}
+p <- ggplot(counts_df, aes(y = count, x = "All Guides")) +
+  geom_boxplot(fill = "#9b59b6", alpha = 0.7, outlier.alpha = 0.3) +
+  scale_y_log10(labels = scales::comma) +
+  coord_flip() +
+  labs(
+    title = "Count Distribution (Box Plot)",
+    subtitle = "Log scale - outliers shown as individual points",
+    y = "Count (log scale)",
+    x = ""
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggplotly(p)
+```
+
+## Cumulative Distribution
+
+```{r cumulative-plot, echo=FALSE, fig.height=5}
+cum_df <- counts_df %>%
+  arrange(desc(count)) %>%
+  mutate(
+    rank = row_number(),
+    cum_count = cumsum(count),
+    cum_pct = cum_count / sum(count) * 100,
+    rank_pct = rank / n() * 100
+  )
+
+# Find key percentiles
+p50_rank <- which.min(abs(cum_df$cum_pct - 50))
+p80_rank <- which.min(abs(cum_df$cum_pct - 80))
+
+p <- ggplot(cum_df, aes(x = rank_pct, y = cum_pct)) +
+  geom_line(color = "#3498db", size = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = c(50, 80), linetype = "dotted", color = "#e74c3c", alpha = 0.7) +
+  annotate("text", x = 90, y = 52, label = "50%", color = "#e74c3c", size = 3) +
+  annotate("text", x = 90, y = 82, label = "80%", color = "#e74c3c", size = 3) +
+  labs(
+    title = "Cumulative Distribution (Lorenz Curve)",
+    subtitle = paste("Gini coefficient:", round(metrics$gini, 3),
+                    "- Diagonal = perfect equality"),
+    x = "% of Guides (ranked by count)",
+    y = "Cumulative % of Total Reads"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16)) +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%"))
+
+ggplotly(p)
+```
+
+<div style="background-color:#f0f0f0; padding:10px; border-radius:5px; margin-top:10px;">
+**Interpretation:** The Lorenz curve shows count inequality. A Gini of 0 means all guides have equal counts. A Gini close to 1 means a few guides dominate.
+**Your data:** Top `r round(cum_df$rank_pct[p50_rank], 1)`% of guides account for 50% of reads. Top `r round(cum_df$rank_pct[p80_rank], 1)`% account for 80%.
+</div>
+
+---
+
+# Outlier Analysis
+
+## QC Status Summary
+
+```{r qc-status-summary, echo=FALSE, fig.height=4}
+qc_summary <- counts_df %>%
+  count(qc_status) %>%
+  mutate(pct = n / sum(n) * 100)
+
+colors <- c("Pass" = "#28a745", "Zero Count" = "#dc3545",
+            "Low Count" = "#ffc107", "High Outlier" = "#9b59b6",
+            "Low Outlier" = "#e67e22")
+
+p <- ggplot(qc_summary, aes(x = reorder(qc_status, -n), y = n, fill = qc_status)) +
+  geom_bar(stat = "identity", alpha = 0.85) +
+  geom_text(aes(label = paste0(n, "\n(", round(pct, 1), "%)")),
+            vjust = -0.2, size = 3.5) +
+  scale_fill_manual(values = colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Guide QC Status Distribution",
+    subtitle = "Flags for downstream DEG analysis consideration",
+    x = "QC Status",
+    y = "Number of Guides"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "none",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+ggplotly(p, tooltip = c("y"))
+```
+
+## Outlier Visualization
+
+```{r outlier-scatter, echo=FALSE, fig.height=5}
+counts_df <- counts_df %>%
+  arrange(count) %>%
+  mutate(rank = row_number())
+
+colors <- c("Pass" = "#95a5a6", "Zero Count" = "#e74c3c",
+            "Low Count" = "#f39c12", "High Outlier" = "#9b59b6",
+            "Low Outlier" = "#3498db")
+
+p <- ggplot(counts_df, aes(x = rank, y = log_count, color = qc_status,
+                           text = paste("Guide:", if("guide_id" %in% names(counts_df)) guide_id else rank,
+                                       "<br>Count:", count,
+                                       "<br>Status:", qc_status))) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "All Guides with QC Flags",
+    subtitle = "Sorted by count - hover for details",
+    x = "Guide Rank",
+    y = "Log10(Count + 1)",
+    color = "QC Status"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggplotly(p, tooltip = "text")
+```
+
+---
+
+# Bias Analysis
+
+```{r gc-bias-section, echo=FALSE, results='asis', eval="gc_content" %in% names(counts_df)}
+cat('## GC Content Bias\n\n')
+```
+
+```{r gc-scatter, echo=FALSE, fig.height=5, eval="gc_content" %in% names(counts_df)}
+p <- ggplot(counts_df, aes(x = gc_content, y = count + 1,
+                           text = paste("GC:", round(gc_content * 100, 1), "%",
+                                       "<br>Count:", count))) +
+  geom_point(alpha = 0.4, color = "#3498db") +
+  geom_smooth(method = "loess", color = "#e74c3c", se = TRUE, alpha = 0.2) +
+  scale_y_log10(labels = scales::comma) +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title = "GC Content vs Read Count",
+    subtitle = paste("Spearman correlation:", round(metrics$gc_correlation, 3),
+                    ifelse(abs(metrics$gc_correlation) > params$gc_bias_threshold,
+                           " - BIAS DETECTED", " - No significant bias")),
+    x = "GC Content",
+    y = "Count + 1 (log scale)"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggplotly(p, tooltip = "text")
+```
+
+```{r gc-boxplot, echo=FALSE, fig.height=4, eval="gc_content" %in% names(counts_df)}
+counts_df$gc_bin <- cut(counts_df$gc_content,
+                        breaks = c(0, 0.3, 0.4, 0.5, 0.6, 0.7, 1),
+                        labels = c("<30%", "30-40%", "40-50%", "50-60%", "60-70%", ">70%"))
+
+p <- ggplot(counts_df %>% filter(!is.na(gc_bin)),
+            aes(x = gc_bin, y = count + 1, fill = gc_bin)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  scale_y_log10(labels = scales::comma) +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Count Distribution by GC Content Bin",
+    x = "GC Content Bin",
+    y = "Count + 1 (log scale)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "none"
+  )
+
+ggplotly(p)
+```
+
+---
+
+# Gene-Level Analysis
+
+```{r gene-section, echo=FALSE, results='asis', eval="gene_name" %in% names(counts_df)}
+cat('## Top Genes by Count\n\n')
+```
+
+```{r gene-boxplot, echo=FALSE, fig.height=6, eval="gene_name" %in% names(counts_df)}
+# Get top 20 genes
+top_genes <- counts_df %>%
+  group_by(gene_name) %>%
+  summarize(total = sum(count), .groups = "drop") %>%
+  arrange(desc(total)) %>%
+  head(20) %>%
+  pull(gene_name)
+
+plot_data <- counts_df %>%
+  filter(gene_name %in% top_genes) %>%
+  mutate(gene_name = factor(gene_name, levels = rev(top_genes)))
+
+p <- ggplot(plot_data, aes(x = gene_name, y = count + 1, fill = gene_name)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.5) +
+  scale_y_log10(labels = scales::comma) +
+  scale_fill_viridis_d() +
+  coord_flip() +
+  labs(
+    title = "Count Distribution - Top 20 Genes",
+    subtitle = "Ranked by total count",
+    x = "Gene",
+    y = "Count + 1 (log scale)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "none"
+  )
+
+ggplotly(p)
+```
+
+```{r gene-table, echo=FALSE, eval="gene_name" %in% names(counts_df)}
+gene_summary <- counts_df %>%
+  group_by(gene_name) %>%
+  summarize(
+    n_guides = n(),
+    total_count = sum(count),
+    mean_count = round(mean(count), 1),
+    median_count = median(count),
+    sd_count = round(sd(count), 1),
+    zero_guides = sum(count == 0),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_count))
+
+DT::datatable(
+  gene_summary,
+  caption = "Gene-Level Summary Statistics",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = 'Bfrtip',
+    buttons = c('csv', 'excel')
+  ),
+  rownames = FALSE,
+  filter = "top"
+) %>%
+  formatRound(columns = c("mean_count", "sd_count"), digits = 1) %>%
+  formatStyle("zero_guides",
+              backgroundColor = styleInterval(c(1, 3), c("white", "#fff3cd", "#f8d7da")))
+```
+
+---
+
+# Flagged Guides for Review
+
+The following guides have been flagged and may require attention before downstream DEG analysis:
+
+```{r flagged-table, echo=FALSE}
+flagged <- counts_df %>%
+  filter(qc_status != "Pass") %>%
+  select(any_of(c("guide_id", "gene_name", "sequence", "count", "qc_status", "gc_content"))) %>%
+  arrange(qc_status, count)
+
+if ("gc_content" %in% names(flagged)) {
+  flagged$gc_content <- round(flagged$gc_content * 100, 1)
+}
+
+DT::datatable(
+ flagged,
+  caption = paste("Flagged Guides (n =", nrow(flagged), ")"),
+  options = list(
+    pageLength = 20,
+    scrollX = TRUE,
+    dom = 'Bfrtip',
+    buttons = c('csv', 'excel', 'copy')
+  ),
+  rownames = FALSE,
+  filter = "top"
+) %>%
+  formatStyle("qc_status",
+              backgroundColor = styleEqual(
+                c("Zero Count", "Low Count", "High Outlier", "Low Outlier"),
+                c("#f8d7da", "#fff3cd", "#e2d5f1", "#ffeaa7")
+              ))
+```
+
+---
+
+# Summary Statistics
+
+```{r detailed-stats, echo=FALSE}
+stats_table <- data.frame(
+  Category = c(rep("Count Statistics", 8), rep("Distribution", 5), rep("QC Metrics", 4)),
+  Metric = c(
+    "Total Guides", "Total Reads", "Mean Count", "Median Count",
+    "Std. Deviation", "Min Count", "Max Count", "CV (Coef. of Variation)",
+    "10th Percentile", "25th Percentile", "75th Percentile", "90th Percentile", "Gini Coefficient",
+    "Zero-Count Guides", "Low-Count Guides", "High Outliers", "GC Bias Correlation"
+  ),
+  Value = c(
+    format(metrics$total_guides, big.mark = ","),
+    format(metrics$total_reads, big.mark = ","),
+    format(round(metrics$mean_count, 1), big.mark = ","),
+    format(round(metrics$median_count, 1), big.mark = ","),
+    format(round(metrics$sd_count, 1), big.mark = ","),
+    metrics$min_count,
+    format(metrics$max_count, big.mark = ","),
+    round(metrics$cv, 3),
+    round(metrics$p10, 1),
+    round(metrics$p25, 1),
+    round(metrics$p75, 1),
+    round(metrics$p90, 1),
+    round(metrics$gini, 4),
+    paste0(metrics$zero_count, " (", round(metrics$zero_pct, 1), "%)"),
+    paste0(metrics$low_count, " (", round(metrics$low_pct, 1), "%)"),
+    sum(counts_df$flag_outlier_high),
+    ifelse(is.na(metrics$gc_correlation), "N/A", round(metrics$gc_correlation, 4))
+  )
+)
+
+kable(stats_table, align = c("l", "l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  pack_rows(index = c("Count Statistics" = 8, "Distribution" = 5, "QC Metrics" = 4))
+```
+
+---
+
+# Session Info
+
+<details>
+<summary>Click to expand session information</summary>
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
+
+**Report generated:** `r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`
+
+**Input file:** `r params$counts_file`
+
+**Parameters used:**
+
+- Minimum count threshold: `r params$min_count_threshold`
+- Maximum zero percentage: `r params$max_zero_pct`%
+- Maximum Gini coefficient: `r params$max_gini`
+- GC bias threshold: `r params$gc_bias_threshold`
+
+</details>
+
+---
+
+<div style="text-align:center; color:#666; margin-top:30px;">
+<small>CRISPR gRNA Counting QC Report | Generated automatically</small>
+</div>
