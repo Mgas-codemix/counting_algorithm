@@ -199,7 +199,124 @@ python main.py --library /full/path/to/your_library.csv --reads /full/path/to/yo
 This could happen if:
 1. Your guide sequences don't match what's in the reads (check for typos)
 2. The guides are in reverse complement orientation - the tool searches forward by default
-3. There are too many sequencing errors
+3. There are too many sequencing errors - **try using mismatch tolerance** (see below)
+
+---
+
+## Advanced Features
+
+### Mismatch-Tolerant Counting
+
+Real sequencing data has errors (~0.1-1% per base). By default, the tool only counts **exact matches**. If you're missing counts due to sequencing errors, enable mismatch tolerance:
+
+```bash
+# Allow 1 mismatch (recommended for most cases)
+python main.py --max-mismatches 1
+
+# Allow up to 2 mismatches (use with caution - may cause false matches)
+python main.py --max-mismatches 2
+```
+
+**How it works:**
+1. First tries exact matching (fast, using Aho-Corasick)
+2. For unmatched reads, extracts the gRNA region using flanking sequences
+3. Finds the best match within the allowed mismatch threshold
+4. Only counts **unique matches** to avoid ambiguity
+
+**Example output with mismatch tolerance:**
+```
+Counting gRNAs in 100000 reads (max mismatches: 1)...
+  - Exact matches: 85234
+  - Mismatch matches: 8921
+  - Unmatched reads: 5845
+```
+
+### Quality Control Reports
+
+The tool automatically runs quality control checks on your library and counting results:
+
+```bash
+# Run with QC (default)
+python main.py
+
+# Skip QC for faster runs
+python main.py --no-qc
+```
+
+**QC checks include:**
+- **Library validation**: Invalid characters, duplicates, GC content distribution
+- **Counting metrics**: Mapping rate, zero-count guides, count distribution
+- **Bias detection**: GC content bias analysis
+
+A QC report is saved to `output/qc_report.txt` with details like:
+```
+CRISPR gRNA COUNTING - QUALITY CONTROL REPORT
+----------------------------------------------
+1. LIBRARY QUALITY
+   Total guides: 500
+   Valid guides: 500
+   GC distribution: {'low (<30%)': 12, 'normal (30-70%)': 476, 'high (>70%)': 12}
+
+2. COUNTING QUALITY
+   Total reads: 100,000
+   Mapped reads: 94,155 (94.2%)
+   Guides with zero counts: 23 (4.6%)
+   Gini coefficient: 0.456
+
+3. BIAS ANALYSIS
+   GC bias correlation: 0.023
+   Interpretation: No significant GC bias detected
+```
+
+### Understanding QC Metrics
+
+| Metric | Good Value | Warning Signs |
+|--------|------------|---------------|
+| Mapping rate | >80% | <50% suggests library/read mismatch |
+| Zero-count guides | <20% | >50% indicates high dropout |
+| Gini coefficient | 0.3-0.7 | >0.9 = very unequal distribution |
+| GC bias correlation | <0.1 | >0.3 = significant GC bias |
+
+### GC Content Normalization
+
+If GC bias is detected, you can apply normalization:
+
+```bash
+python main.py --gc-normalize
+```
+
+This adjusts counts based on GC content to correct for PCR amplification bias.
+
+---
+
+## Handling Common CRISPR Experiment Issues
+
+### Issue: Low Mapping Rate
+
+**Symptoms:** <50% of reads match guides
+
+**Possible causes & solutions:**
+1. **Wrong library file** - Verify your library matches the experiment
+2. **Adapter contamination** - Trim adapters before counting
+3. **High error rate** - Use `--max-mismatches 1`
+
+### Issue: Many Guides with Zero Counts
+
+**Symptoms:** >30% of guides have count=0
+
+**Possible causes & solutions:**
+1. **Strong selection** - Expected in some screens (not an error)
+2. **Library representation issues** - Check original library QC
+3. **Sequencing depth too low** - More reads needed
+
+### Issue: Extreme Count Distribution
+
+**Symptoms:** A few guides dominate all counts (Gini >0.9)
+
+**Possible causes & solutions:**
+1. **Strong selection pressure** - Expected in drug screens
+2. **PCR bias** - Consider GC normalization
+3. **Contamination** - Check for specific guide dominance
 
 ---
 
@@ -211,6 +328,9 @@ This could happen if:
 | `python main.py --help` | Show all available options |
 | `python main.py --explain` | Explain how the algorithm works |
 | `python main.py -l LIB -r READS -o OUT` | Count guides from your files |
+| `python main.py --max-mismatches 1` | Enable mismatch-tolerant counting |
+| `python main.py --no-qc` | Skip quality control checks |
+| `python main.py --gc-normalize` | Apply GC content normalization |
 
 ---
 
@@ -228,6 +348,8 @@ If you run into problems:
 1. **Install**: `pip install -r requirements.txt`
 2. **Try demo**: `python main.py`
 3. **Use your data**: `python main.py -l library.csv -r reads.fastq -o counts.csv`
-4. **Open results**: Look at the CSV file in Excel
+4. **Handle errors**: Add `--max-mismatches 1` if counts are low due to sequencing errors
+5. **Check quality**: Review `output/qc_report.txt` for potential issues
+6. **Open results**: Look at the CSV file in Excel
 
 That's all you need to count guide RNAs in your CRISPR screening data!
